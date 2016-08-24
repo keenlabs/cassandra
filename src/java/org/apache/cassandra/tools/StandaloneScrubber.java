@@ -51,6 +51,7 @@ public class StandaloneScrubber
     private static final String MANIFEST_CHECK_OPTION  = "manifest-check";
     private static final String SKIP_CORRUPTED_OPTION = "skip-corrupted";
     private static final String NO_VALIDATE_OPTION = "no-validate";
+    private static final String SSTABLES_OPTION = "sstables";
 
     public static void main(String args[])
     {
@@ -81,6 +82,16 @@ public class StandaloneScrubber
                 Set<Component> components = entry.getValue();
                 if (!components.contains(Component.DATA))
                     continue;
+
+                if (options.sstables.size() > 0) { // list of sstables is available
+                    String filename = entry.getKey().filenameFor(Component.DATA);
+                    if (!options.sstables.contains(filename)) { // filename doesn't match the given list of sstables, skip
+                        if (options.debug) {
+                            System.out.println("Skipping sstable not in list: " + filename);
+                        }
+                        continue;
+                    }
+                }
 
                 try
                 {
@@ -187,11 +198,13 @@ public class StandaloneScrubber
         public boolean manifestCheckOnly;
         public boolean skipCorrupted;
         public boolean noValidate;
+        public List<String> sstables;
 
         private Options(String keyspaceName, String cfName)
         {
             this.keyspaceName = keyspaceName;
             this.cfName = cfName;
+            this.sstables = new ArrayList<>();
         }
 
         public static Options parseArgs(String cmdArgs[])
@@ -227,6 +240,11 @@ public class StandaloneScrubber
                 opts.manifestCheckOnly = cmd.hasOption(MANIFEST_CHECK_OPTION);
                 opts.skipCorrupted = cmd.hasOption(SKIP_CORRUPTED_OPTION);
                 opts.noValidate = cmd.hasOption(NO_VALIDATE_OPTION);
+                if (cmd.hasOption(SSTABLES_OPTION)) {
+                    opts.sstables.addAll(
+                            Arrays.asList(
+                                    cmd.getOptionValue(SSTABLES_OPTION).split(",")));
+                }
 
                 return opts;
             }
@@ -253,6 +271,7 @@ public class StandaloneScrubber
             options.addOption("m",  MANIFEST_CHECK_OPTION, "only check and repair the leveled manifest, without actually scrubbing the sstables");
             options.addOption("s",  SKIP_CORRUPTED_OPTION, "skip corrupt rows in counter tables");
             options.addOption("n",  NO_VALIDATE_OPTION,    "do not validate columns using column validator");
+            options.addOption("t",  SSTABLES_OPTION, true, "comma separated list of sstable data files to scrub");
             return options;
         }
 
