@@ -19,7 +19,9 @@
  -->
 <project basedir="." default="jar" name="apache-cassandra"
          xmlns:artifact="antlib:org.apache.maven.artifact.ant">
-    <property environment="env"/>
+  <property name="ant.build.javac.source" value="1.7"/>
+  <property name="ant.build.javac.target" value="1.7"/>
+  <property environment="env"/>
     <property file="build.properties" />
     <property file="build.properties.default" />
     <property name="debuglevel" value="source,lines,vars"/>

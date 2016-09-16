@@ -35,36 +35,39 @@ import org.apache.cassandra.io.sstable.*;
 import org.apache.cassandra.service.CassandraDaemon;
 import org.apache.cassandra.utils.OutputHandler;
 
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadPoolExecutor;
+
 import static org.apache.cassandra.tools.BulkLoader.CmdLineOptions;
 
-public class StandaloneScrubber
-{
-    static
-    {
+public class StandaloneScrubber {
+    static {
         CassandraDaemon.initLog4j();
     }
 
     private static final String TOOL_NAME = "sstablescrub";
-    private static final String VERBOSE_OPTION  = "verbose";
-    private static final String DEBUG_OPTION  = "debug";
-    private static final String HELP_OPTION  = "help";
-    private static final String MANIFEST_CHECK_OPTION  = "manifest-check";
+    private static final String VERBOSE_OPTION = "verbose";
+    private static final String DEBUG_OPTION = "debug";
+    private static final String HELP_OPTION = "help";
+    private static final String MANIFEST_CHECK_OPTION = "manifest-check";
     private static final String SKIP_CORRUPTED_OPTION = "skip-corrupted";
     private static final String NO_VALIDATE_OPTION = "no-validate";
     private static final String SSTABLES_OPTION = "sstables";
+    private static final String PARALLEL_OPTION = "parallel";
+    private static LeveledManifest manifest;
 
-    public static void main(String args[])
-    {
+    public static void main(String args[]) {
         Options options = Options.parseArgs(args);
-        try
-        {
+        try {
             // load keyspace descriptions.
             DatabaseDescriptor.loadSchemas(false);
 
             if (Schema.instance.getCFMetaData(options.keyspaceName, options.cfName) == null)
-                throw new IllegalArgumentException(String.format("Unknown keyspace/columnFamily %s.%s",
-                                                                 options.keyspaceName,
-                                                                 options.cfName));
+                throw new IllegalArgumentException(
+                        String.format("Unknown keyspace/columnFamily %s.%s", options.keyspaceName, options.cfName));
 
             // Do not load sstables since they might be broken
             Keyspace keyspace = Keyspace.openWithoutSSTables(options.keyspaceName);
@@ -77,15 +80,15 @@ public class StandaloneScrubber
             List<SSTableReader> sstables = new ArrayList<SSTableReader>();
 
             // Scrub sstables
-            for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet())
-            {
+            for (Map.Entry<Descriptor, Set<Component>> entry : lister.list().entrySet()) {
                 Set<Component> components = entry.getValue();
                 if (!components.contains(Component.DATA))
                     continue;
 
                 if (options.sstables.size() > 0) { // list of sstables is available
                     String filename = entry.getKey().filenameFor(Component.DATA);
-                    if (!options.sstables.contains(filename)) { // filename doesn't match the given list of sstables, skip
+                    if (!options.sstables.contains(filename)) { // filename doesn't match the given list of sstables,
+                                                                // skip
                         if (options.debug) {
                             System.out.println("Skipping sstable not in list: " + filename);
                         }
@@ -93,17 +96,14 @@ public class StandaloneScrubber
                     }
                 }
 
-                try
-                {
+                try {
                     SSTableReader sstable = SSTableReader.openNoValidation(entry.getKey(), components, cfs.metadata);
                     sstables.add(sstable);
 
                     File snapshotDirectory = Directories.getSnapshotDirectory(sstable.descriptor, snapshotName);
                     sstable.createLinks(snapshotDirectory.getPath());
 
-                }
-                catch (Exception e)
-                {
+                } catch (Exception e) {
                     System.err.println(String.format("Error Loading %s: %s", entry.getKey(), e.getMessage()));
                     if (options.debug)
                         e.printStackTrace(System.err);
@@ -112,56 +112,58 @@ public class StandaloneScrubber
             System.out.println(String.format("Pre-scrub sstables snapshotted into snapshot %s", snapshotName));
 
             // if old-style json manifest, snapshot it
-            if (cfs.directories.tryGetLeveledManifest() != null)
-            {
+            if (cfs.directories.tryGetLeveledManifest() != null) {
                 cfs.directories.snapshotLeveledManifest(snapshotName);
                 System.out.println(String.format("Leveled manifest snapshotted into snapshot %s", snapshotName));
             }
 
-            LeveledManifest manifest = null;
+            manifest = null;
             // If leveled, load the manifest
-            if (cfs.getCompactionStrategy() instanceof LeveledCompactionStrategy)
-            {
-                int maxSizeInMB = (int)((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
+            if (cfs.getCompactionStrategy() instanceof LeveledCompactionStrategy) {
+                int maxSizeInMB = (int) ((cfs.getCompactionStrategy().getMaxSSTableBytes()) / (1024L * 1024L));
                 manifest = LeveledManifest.create(cfs, maxSizeInMB, sstables);
             }
 
-            if (!options.manifestCheckOnly)
-            {
-                for (SSTableReader sstable : sstables)
-                {
-                    try
-                    {
-                        Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted, !options.noValidate, handler, true);
-                        try
-                        {
-                            scrubber.scrub();
-                        }
-                        finally
-                        {
-                            scrubber.close();
-                        }
+            if (!options.manifestCheckOnly) {
+                ExecutorService executor = Executors.newFixedThreadPool(options.parallel_threads);
+                List<Future<?>> scrubs = new ArrayList<>();
+                for (SSTableReader sstable : sstables) {
+                    scrubs.add(executor.submit(new Runnable() {
 
-                        if (manifest != null)
-                        {
-                            if (scrubber.getNewInOrderSSTable() != null)
-                                manifest.add(scrubber.getNewInOrderSSTable());
+                        @Override
+                        public void run() {
+                            try {
+                                Scrubber scrubber = new Scrubber(cfs, sstable, options.skipCorrupted,
+                                        !options.noValidate, handler, true);
+                                try {
+                                    scrubber.scrub();
+                                } finally {
+                                    scrubber.close();
+                                }
 
-                            List<SSTableReader> added = scrubber.getNewSSTable() == null
-                                ? Collections.<SSTableReader>emptyList()
-                                : Collections.singletonList(scrubber.getNewSSTable());
-                            manifest.replace(Collections.singletonList(sstable), added);
+                                if (manifest != null) {
+                                    if (scrubber.getNewInOrderSSTable() != null)
+                                        manifest.add(scrubber.getNewInOrderSSTable());
+
+                                    List<SSTableReader> added = scrubber.getNewSSTable() == null
+                                            ? Collections.<SSTableReader> emptyList()
+                                            : Collections.singletonList(scrubber.getNewSSTable());
+                                    manifest.replace(Collections.singletonList(sstable), added);
+                                }
+
+                                // Remove the sstable (it's been copied by scrub and snapshotted)
+                                sstable.markObsolete();
+                                sstable.releaseReference();
+                            } catch (Exception e) {
+                                System.err.println(String.format("Error scrubbing %s: %s", sstable, e.getMessage()));
+                                e.printStackTrace(System.err);
+                            }
                         }
-
-                        // Remove the sstable (it's been copied by scrub and snapshotted)
-                        sstable.markObsolete();
-                        sstable.releaseReference();
-                    }
-                    catch (Exception e)
-                    {
-                        System.err.println(String.format("Error scrubbing %s: %s", sstable, e.getMessage()));
-                        e.printStackTrace(System.err);
-                    }
+                    }));
+                }
+                executor.shutdown();
+                for(Future<?> scrub:scrubs) {
+                    scrub.get();
                 }
             }
 
@@ -171,9 +173,7 @@ public class StandaloneScrubber
 
             SSTableDeletingTask.waitForDeletions();
             System.exit(0); // We need that to stop non daemonized threads
-        }
-        catch (Exception e)
-        {
+        } catch (Exception e) {
             System.err.println(e.getMessage());
             if (options.debug)
                 e.printStackTrace(System.err);
@@ -181,15 +181,13 @@ public class StandaloneScrubber
         }
     }
 
-    private static void checkManifest(LeveledManifest manifest)
-    {
+    private static void checkManifest(LeveledManifest manifest) {
         System.out.println(String.format("Checking leveled manifest"));
         for (int i = 1; i <= manifest.getLevelCount(); ++i)
             manifest.repairOverlappingSSTables(i);
     }
 
-    private static class Options
-    {
+    private static class Options {
         public final String keyspaceName;
         public final String cfName;
 
@@ -199,31 +197,28 @@ public class StandaloneScrubber
         public boolean skipCorrupted;
         public boolean noValidate;
         public List<String> sstables;
+        public Integer parallel_threads;
 
-        private Options(String keyspaceName, String cfName)
-        {
+        private Options(String keyspaceName, String cfName) {
             this.keyspaceName = keyspaceName;
             this.cfName = cfName;
             this.sstables = new ArrayList<>();
+            this.parallel_threads = 1;
         }
 
-        public static Options parseArgs(String cmdArgs[])
-        {
+        public static Options parseArgs(String cmdArgs[]) {
             CommandLineParser parser = new GnuParser();
             CmdLineOptions options = getCmdLineOptions();
-            try
-            {
+            try {
                 CommandLine cmd = parser.parse(options, cmdArgs, false);
 
-                if (cmd.hasOption(HELP_OPTION))
-                {
+                if (cmd.hasOption(HELP_OPTION)) {
                     printUsage(options);
                     System.exit(0);
                 }
 
                 String[] args = cmd.getArgs();
-                if (args.length != 2)
-                {
+                if (args.length != 2) {
                     String msg = args.length < 2 ? "Missing arguments" : "Too many arguments";
                     System.err.println(msg);
                     printUsage(options);
@@ -241,46 +236,45 @@ public class StandaloneScrubber
                 opts.skipCorrupted = cmd.hasOption(SKIP_CORRUPTED_OPTION);
                 opts.noValidate = cmd.hasOption(NO_VALIDATE_OPTION);
                 if (cmd.hasOption(SSTABLES_OPTION)) {
-                    opts.sstables.addAll(
-                            Arrays.asList(
-                                    cmd.getOptionValue(SSTABLES_OPTION).split(",")));
+                    opts.sstables.addAll(Arrays.asList(cmd.getOptionValue(SSTABLES_OPTION).split(",")));
+                }
+                if (cmd.hasOption(PARALLEL_OPTION)) {
+                    opts.parallel_threads = Integer.valueOf(cmd.getOptionValue(PARALLEL_OPTION));
                 }
 
                 return opts;
-            }
-            catch (ParseException e)
-            {
+            } catch (ParseException e) {
                 errorMsg(e.getMessage(), options);
                 return null;
             }
         }
 
-        private static void errorMsg(String msg, CmdLineOptions options)
-        {
+        private static void errorMsg(String msg, CmdLineOptions options) {
             System.err.println(msg);
             printUsage(options);
             System.exit(1);
         }
 
-        private static CmdLineOptions getCmdLineOptions()
-        {
+        private static CmdLineOptions getCmdLineOptions() {
             CmdLineOptions options = new CmdLineOptions();
-            options.addOption(null, DEBUG_OPTION,          "display stack traces");
-            options.addOption("v",  VERBOSE_OPTION,        "verbose output");
-            options.addOption("h",  HELP_OPTION,           "display this help message");
-            options.addOption("m",  MANIFEST_CHECK_OPTION, "only check and repair the leveled manifest, without actually scrubbing the sstables");
-            options.addOption("s",  SKIP_CORRUPTED_OPTION, "skip corrupt rows in counter tables");
-            options.addOption("n",  NO_VALIDATE_OPTION,    "do not validate columns using column validator");
-            options.addOption("t",  SSTABLES_OPTION, true, "comma separated list of sstable data files to scrub");
+            options.addOption(null, DEBUG_OPTION, "display stack traces");
+            options.addOption("v", VERBOSE_OPTION, "verbose output");
+            options.addOption("h", HELP_OPTION, "display this help message");
+            options.addOption("m", MANIFEST_CHECK_OPTION,
+                    "only check and repair the leveled manifest, without actually scrubbing the sstables");
+            options.addOption("s", SKIP_CORRUPTED_OPTION, "skip corrupt rows in counter tables");
+            options.addOption("n", NO_VALIDATE_OPTION, "do not validate columns using column validator");
+            options.addOption("t", SSTABLES_OPTION, true, "comma separated list of sstable data files to scrub");
+            options.addOption("p", PARALLEL_OPTION, true,
+                    "parallel scrub, provide number of threads to have in thread pool. If not specified, uses 1 thread.");
             return options;
         }
 
-        public static void printUsage(CmdLineOptions options)
-        {
+        public static void printUsage(CmdLineOptions options) {
             String usage = String.format("%s [options] <keyspace> <column_family>", TOOL_NAME);
             StringBuilder header = new StringBuilder();
             header.append("--\n");
-            header.append("Scrub the sstable for the provided column family." );
+            header.append("Scrub the sstable for the provided column family.");
             header.append("\n--\n");
             header.append("Options are:");
             new HelpFormatter().printHelp(usage, header.toString(), options, "");
