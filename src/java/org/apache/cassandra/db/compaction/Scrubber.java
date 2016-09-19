@@ -127,7 +127,7 @@ public class Scrubber implements Closeable
 
     public void scrub()
     {
-        outputHandler.output(String.format("Scrubbing %s (%s bytes)", sstable, dataFile.length()));
+        outputHandler.output(String.format("[%d] Scrubbing %s (%s bytes)", Thread.currentThread().getId(), sstable, dataFile.length()));
         try
         {
             nextIndexKey = indexAvailable() ? ByteBufferUtil.readWithShortLength(indexFile) : null;

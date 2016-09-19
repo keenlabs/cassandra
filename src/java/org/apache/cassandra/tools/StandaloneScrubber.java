@@ -60,7 +60,7 @@ public class StandaloneScrubber {
     private static LeveledManifest manifest;
 
     public static void main(String args[]) {
-        Options options = Options.parseArgs(args);
+        final Options options = Options.parseArgs(args);
         try {
             // load keyspace descriptions.
             DatabaseDescriptor.loadSchemas(false);
@@ -71,10 +71,10 @@ public class StandaloneScrubber {
 
             // Do not load sstables since they might be broken
             Keyspace keyspace = Keyspace.openWithoutSSTables(options.keyspaceName);
-            ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(options.cfName);
+            final ColumnFamilyStore cfs = keyspace.getColumnFamilyStore(options.cfName);
             String snapshotName = "pre-scrub-" + System.currentTimeMillis();
 
-            OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
+            final OutputHandler handler = new OutputHandler.SystemOutput(options.verbose, options.debug);
             Directories.SSTableLister lister = cfs.directories.sstableLister().skipTemporary(true);
 
             List<SSTableReader> sstables = new ArrayList<SSTableReader>();
@@ -127,7 +127,7 @@ public class StandaloneScrubber {
             if (!options.manifestCheckOnly) {
                 ExecutorService executor = Executors.newFixedThreadPool(options.parallel_threads);
                 List<Future<?>> scrubs = new ArrayList<>();
-                for (SSTableReader sstable : sstables) {
+                for (final SSTableReader sstable : sstables) {
                     scrubs.add(executor.submit(new Runnable() {
 
                         @Override
