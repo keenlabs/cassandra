@@ -25,7 +25,13 @@ import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
 
-import org.apache.cassandra.db.*;
+import org.apache.cassandra.db.ArrayBackedSortedColumns;
+import org.apache.cassandra.db.Column;
+import org.apache.cassandra.db.ColumnFamily;
+import org.apache.cassandra.db.ColumnFamilyStore;
+import org.apache.cassandra.db.DecoratedKey;
+import org.apache.cassandra.db.DeletionTime;
+import org.apache.cassandra.db.RowIndexEntry;
 import org.apache.cassandra.db.columniterator.IdentityQueryFilter;
 import org.apache.cassandra.db.filter.IDiskAtomFilter;
 import org.apache.cassandra.db.index.SecondaryIndexManager;
@@ -36,12 +42,15 @@ import org.apache.cassandra.io.util.DataOutputBuffer;
 import org.apache.cassandra.utils.CloseableIterator;
 import org.apache.cassandra.utils.FBUtilities;
 import org.apache.cassandra.utils.MergeIterator;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * PrecompactedRow merges its rows in its constructor in memory.
  */
 public class PrecompactedRow extends AbstractCompactedRow
 {
+    private static final Logger logger = LoggerFactory.getLogger(PrecompactedRow.class); 
     private final ColumnFamily compactedCf;
 
     // it is caller's responsibility to call removeDeleted from the cf before calling this constructor
@@ -95,9 +104,17 @@ public class PrecompactedRow extends AbstractCompactedRow
         List<CloseableIterator<Column>> data = new ArrayList<>(rows.size());
         for (SSTableIdentityIterator row : rows)
         {
-            ColumnFamily cf = row.getColumnFamilyWithColumns(ArrayBackedSortedColumns.factory);
-            returnCF.delete(cf);
-            data.add(FBUtilities.closeableIterator(cf.iterator()));
+            try 
+            {
+                ColumnFamily cf = row.getColumnFamilyWithColumns(ArrayBackedSortedColumns.factory);
+                returnCF.delete(cf);
+                data.add(FBUtilities.closeableIterator(cf.iterator()));
+            }
+            catch (AssertionError e)
+            {
+                logger.warn("Failed to merge row. Row source:" + row.getFilename());
+                throw e;
+            }
         }
 
         merge(returnCF, data, controller.cfs.indexManager.updaterFor(rows.get(0).getKey()));

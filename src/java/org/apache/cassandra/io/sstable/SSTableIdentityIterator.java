@@ -231,4 +231,8 @@ public class SSTableIdentityIterator implements Comparable<SSTableIdentityIterat
         return key.compareTo(o.key);
     }
 
+    public String getFilename() {
+        return filename;
+    }
+
 }

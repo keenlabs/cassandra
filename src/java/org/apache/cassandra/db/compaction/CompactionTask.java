@@ -161,8 +161,13 @@ public class CompactionTask extends AbstractCompactionTask
             Directories.DataDirectory dataDirectory = getWriteDirectory(writeSize);
             SSTableWriter writer = createCompactionWriter(cfs.directories.getLocationForDisk(dataDirectory), keysPerSSTable);
             writers.add(writer);
+            int iteration = 0;
             while (iter.hasNext())
             {
+                if ( ++iteration % 50000 == 0) {
+                    logger.info("Compacting iteration" + iteration);
+                }
+                
                 if (ci.isStopRequested())
                     throw new CompactionInterruptedException(ci.getCompactionInfo());
 
