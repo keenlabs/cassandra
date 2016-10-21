@@ -804,6 +804,18 @@ public class CompactionManager implements CompactionManagerMBean
             }
             validator.complete();
         }
+        catch( AssertionError e )
+        {
+            String message = "Assertion failure. One of the following sstables is suspect";
+            String delim = ":";
+            for( SSTableReader sstable : sstables ) 
+            {
+                message += delim + sstable.getFilename();
+                delim = ",";
+            }
+            logger.error(message);
+            throw new AssertionError(message,e);
+        }
         finally
         {
             iter.close();

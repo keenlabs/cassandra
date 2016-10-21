@@ -29,6 +29,7 @@ import com.google.common.collect.AbstractIterator;
 
 import org.apache.cassandra.io.IVersionedSerializer;
 import org.apache.cassandra.net.MessagingService;
+import org.apache.cassandra.serializers.UTF8Serializer;
 import org.apache.cassandra.utils.ByteBufferUtil;
 
 import org.slf4j.Logger;
@@ -121,9 +122,11 @@ public class RangeTombstoneList implements Iterable<RangeTombstone>
      */
     public void add(ByteBuffer start, ByteBuffer end, long markedAt, int delTime)
     {
+        assert(comparator.compare(start, end) <=0);
         if (isEmpty())
         {
             addInternal(0, start, end, markedAt, delTime);
+            assertSorted();
             return;
         }
 
@@ -133,13 +136,21 @@ public class RangeTombstoneList implements Iterable<RangeTombstone>
         if (c < 0)
         {
             addInternal(size, start, end, markedAt, delTime);
+            assertSorted();
         }
         else
         {
             // Note: insertFrom expect i to be the insertion point in term of interval ends
             int pos = Arrays.binarySearch(ends, 0, size, start, comparator);
             insertFrom((pos >= 0 ? pos : -pos-1), start, end, markedAt, delTime);
+            try {
+                assertSorted();
+            } catch( AssertionError e) {
+                logger.warn("We've gone out-of-order:" + pos);
+                throw e;                
+            }
         }
+        
     }
 
     /**
@@ -181,23 +192,44 @@ public class RangeTombstoneList implements Iterable<RangeTombstone>
         }
         else
         {
-            int i = 0;
-            int j = 0;
+            int i = 0; // pointer into "this"
+            int j = 0; // pointer into "tombstones"
+            
+            // Verify that this is sorted:
+            tombstones.assertSorted();
+            assertSorted();
+            
+            // basically this is a linear search for the position in "this" where tombstones.starts[j] should be inserted.
+            // It's written such that it only scans each list once, since they're both supposed to be sorted.
             while (i < size && j < tombstones.size)
             {
                 if (comparator.compare(tombstones.starts[j], ends[i]) <= 0)
-                {
+                {   
+                    // ``tombstones`` item is before ends[i], so insert it there.
                     insertFrom(i, tombstones.starts[j], tombstones.ends[j], tombstones.markedAts[j], tombstones.delTimes[j]);
-                    j++;
+                    j++; // and move to the next item to insert.
+                    assertSorted();
                 }
                 else
                 {
-                    i++;
+                    i++; // ``tombstones`` item is after ends[i], so 
                 }
             }
-            // Addds the remaining ones from tombstones if any (note that addInternal will increment size if relevant).
+            // Adds the remaining items from ``tombstones`` if any (note that addInternal will increment size if relevant).
             for (; j < tombstones.size; j++)
                 addInternal(size, tombstones.starts[j], tombstones.ends[j], tombstones.markedAts[j], tombstones.delTimes[j]);
+            assertSorted();
+        }
+    }
+
+    /**
+     * Check the invariant for RangeTombstoneList: that all items are in order.
+     */
+    private void assertSorted() {
+        for(int p = 0; p < size -1; ++p) {
+            assert(comparator.compare(starts[p], starts[p+1]) <= 0);
+            assert(comparator.compare(starts[p], ends[p]) <= 0);
+            assert(comparator.compare(ends[p], ends[p+1]) <= 0);
         }
     }
 
@@ -447,6 +479,9 @@ public class RangeTombstoneList implements Iterable<RangeTombstone>
             assert i == 0 || comparator.compare(ends[i-1], start) <= 0;
 
             int c = comparator.compare(start, ends[i]);
+            if (c > 0) {
+                logger.warn("c > 0. About to Assert. comparator.class.name:" + comparator.getClass().getName());
+            }
             assert c <= 0;
             if (c == 0)
             {
